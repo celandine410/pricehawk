@@ -1,0 +1,15 @@
+[project]
+name = "pricehawk"
+version = "0.1.0"
+description = "自动化电商比价监控系统 — 零成本版"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+pricehawk = "src.main:main"

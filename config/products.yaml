@@ -1,0 +1,13 @@
+# 比价鹰 — 商品监控配置
+# 在这里添加你想监控的商品
+# Server酱 Key 通过 GitHub Actions Secrets 传入 (SERVERCHAN_KEY)
+
+products:
+  # 示例商品 — 请替换为你自己的商品链接
+  - id: "example-1"
+    name: "示例商品"
+    # taobao_url: "https://item.taobao.com/item.htm?id=xxx"
+    # jd_url: "https://item.jd.com/xxxx.html"
+    target_price: null        # 目标价（低于此价通知），设为 null 不启用
+    drop_threshold: 5.0       # 跌幅超过此百分比时通知
+    arbitrage_threshold: 10.0 # 跨平台价差超过此金额（元）时通知
