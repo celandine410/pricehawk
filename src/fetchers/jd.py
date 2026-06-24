@@ -15,6 +15,7 @@ class JDFetcher(BaseFetcher):
     """京东价格抓取器"""
 
     PLATFORM = "jd"
+    PRICE_API = "https://p.3.cn/prices/mgets"
 
     async def fetch(self, url: str) -> Optional[ProductInfo]:
         """从京东商品页/API 抓取价格信息"""
@@ -46,9 +47,12 @@ class JDFetcher(BaseFetcher):
         # --- 标题 ---
         title = self._extract_title(soup, html)
 
-        # --- 价格 ---
-        # 京东价格通常通过 JS API 动态加载，我们尝试多种方式
-        price = self._extract_price(soup, html, sku_id)
+        # --- 价格: 优先 API，其次页面解析 ---
+        price = None
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            price = await self._fetch_price_from_api(client, sku_id)
+        if price is None:
+            price = self._extract_price_from_page(html)
         if price is None:
             print(f"[京东] 无法解析价格: {url[:50]}...")
             return None
@@ -69,6 +73,25 @@ class JDFetcher(BaseFetcher):
             discount=discount,
             in_stock=True,
         )
+
+    async def _fetch_price_from_api(self, client: httpx.AsyncClient, sku_id: str) -> Optional[float]:
+        """通过京东价格 API 获取价格"""
+        try:
+            api_url = f"{self.PRICE_API}?skuIds=J_{sku_id}&type=1"
+            api_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": "https://item.jd.com/",
+            }
+            resp = await client.get(api_url, headers=api_headers)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    price_str = data[0].get("p")
+                    if price_str:
+                        return float(price_str)
+        except Exception as e:
+            print(f"[京东] API 请求异常: {e}")
+        return None
 
     @staticmethod
     def _extract_sku(url: str, html: str) -> str:
@@ -102,36 +125,17 @@ class JDFetcher(BaseFetcher):
         return None
 
     @staticmethod
-    def _extract_price(soup: BeautifulSoup, html: str, sku_id: str) -> Optional[float]:
-        """京东价格提取 — 尝试页面 JS 变量 + DOM"""
-        # 方法1: 页面中的价格 JSON
-        price_patterns = [
+    def _extract_price_from_page(html: str) -> Optional[float]:
+        """从页面 HTML 正则提取价格（备用方案）"""
+        patterns = [
             r'"price"\s*:\s*["\']?(\d+\.?\d*)',
             r'"p"\s*:\s*["\']?(\d+\.?\d*)',
             r'pageConfig\.price\s*=\s*(\d+\.?\d*)',
         ]
-        for pattern in price_patterns:
+        for pattern in patterns:
             m = re.search(pattern, html)
             if m:
                 return float(m.group(1))
-
-        # 方法2: DOM 元素
-        selectors = [
-            ".p-price span.price", ".p-price",
-            "#jd-price", "span.price",
-            ".summary-price .price",
-        ]
-        for sel in selectors:
-            el = soup.select_one(sel)
-            if el and el.text.strip():
-                price_text = re.sub(r'[^\d.]', '', el.text.strip())
-                if price_text:
-                    return float(price_text)
-
-        # 方法3: 尝试调用京东价格API（需要 sku_id）
-        # 注意：这只是一个 fallback，实际可能被 CORS 限制，但在服务端没问题
-        # 但我们用 httpx 来实现
-        # 为简化，先跳过 API 方式，用页面解析为主
         return None
 
     @staticmethod
