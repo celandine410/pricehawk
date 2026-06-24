@@ -30,14 +30,15 @@ class JDFetcher(BaseFetcher):
                     args=["--no-sandbox", "--disable-setuid-sandbox"]
                 )
                 context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
-                    viewport={"width": 1440, "height": 900},
+                    user_agent="Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile",
+                    viewport={"width": 375, "height": 812},
                     locale="zh-CN",
                 )
                 page = await context.new_page()
 
+                page_url = f"https://item.m.jd.com/product/{sku_id}.html"
                 print(f"  加载页面...")
-                await page.goto(url, wait_until="load", timeout=30000)
+                await page.goto(page_url, wait_until="load", timeout=30000)
                 await page.wait_for_timeout(5000)
 
                 # 三合一提取
@@ -88,7 +89,6 @@ class JDFetcher(BaseFetcher):
         selectors = [
             ".p-price", "#jd-price", ".summary-price",
             ".sale-price", ".p-price span.price",
-            "[class*='price']",
         ]
         for sel in selectors:
             try:

@@ -92,7 +92,6 @@ class TaobaoFetcher(BaseFetcher):
         selectors = [
             ".tm-price", ".tb-rmb-num", ".price-current",
             ".J_StrPr498", ".tm-promo-price .tm-price",
-            "[class*='price']", "[class*='Price']",
         ]
         for sel in selectors:
             try:
