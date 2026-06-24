@@ -1,7 +1,6 @@
-"""淘宝/天猫价格抓取器 — Playwright JS 变量提取版"""
+"""淘宝/天猫价格抓取器 — CSS + JS + 正则三合一"""
 from __future__ import annotations
 
-import json
 import re
 from typing import Optional
 
@@ -38,21 +37,31 @@ class TaobaoFetcher(BaseFetcher):
 
                 page_url = f"https://m.taobao.com/item.htm?id={sku_id}"
                 print(f"  加载页面...")
-                await page.goto(page_url, wait_until="networkidle", timeout=30000)
-                await page.wait_for_timeout(3000)
+                await page.goto(page_url, wait_until="load", timeout=30000)
+                await page.wait_for_timeout(5000)
 
-                # 从 JS 变量中提取价格
-                price = await self._extract_price_from_js(page)
+                # CSS选择器 → JS变量 → 正则 三合一
+                price = await self._extract_price(page)
 
-                # 如果 JS 变量没有，尝试从网络响应中拦截
-                if price is None:
-                    price = await self._extract_price_from_api(page)
-
+                # 标题
                 title = await page.title()
+
+                # 调试：如果没拿到价格，打印部分页面信息
+                if price is None:
+                    html = await page.content()
+                    title2 = await page.title()
+                    print(f"  页面标题: {title2[:60]}")
+                    print(f"  HTML长度: {len(html)}")
+                    # 搜一下页面上有没有数字
+                    body = await page.inner_text("body")
+                    nums = re.findall(r'[¥￥]?\s*(\d+\.\d{2})', body)
+                    if nums:
+                        print(f"  页面上含¥的数字: {nums[:5]}")
+
                 await browser.close()
 
                 if price is None:
-                    print(f"[淘宝] 无法从页面提取价格")
+                    print(f"[淘宝] 无法提取价格")
                     return None
 
                 if title:
@@ -75,114 +84,79 @@ class TaobaoFetcher(BaseFetcher):
             print(f"[淘宝] Playwright 异常: {type(e).__name__}: {str(e)[:100]}")
             return None
 
-    async def _extract_price_from_js(self, page) -> Optional[float]:
-        """从页面 JavaScript 变量中提取价格"""
+    async def _extract_price(self, page) -> Optional[float]:
+        """三合一价格提取：CSS选择器 → JS变量 → 全文正则"""
+        all_prices = []
+
+        # 1) CSS选择器
+        selectors = [
+            ".tm-price", ".tb-rmb-num", ".price-current",
+            ".J_StrPr498", ".tm-promo-price .tm-price",
+            "[class*='price']", "[class*='Price']",
+        ]
+        for sel in selectors:
+            try:
+                elements = await page.query_selector_all(sel)
+                for el in elements:
+                    text = await el.inner_text()
+                    nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
+                    for n in nums:
+                        v = float(n)
+                        if 10 <= v <= 9999:
+                            all_prices.append(("CSS", sel, v))
+            except Exception:
+                continue
+
+        # 2) JS变量
         js_queries = [
-            # 淘宝 React 状态（Rax/SSR）
             """() => { try {
                 const s = document.getElementById('__INITIAL_STATE__');
-                if (s) {
-                    const d = JSON.parse(s.textContent);
-                    return d?.item?.price || d?.detail?.item?.price || d?.data?.item?.price;
-                }
-            } catch(e) {} return null; }""",
-
-            # 淘宝 g_config / __g
+                if(s){const d=JSON.parse(s.textContent);return d?.item?.price||d?.detail?.item?.price||d?.data?.item?.price}
+            }catch(e){}return null}""",
             """() => { try {
-                if (window.g_config?.price) return window.g_config.price;
-                if (window.__g?.price) return window.__g.price;
-                if (window.GLOBAL_CONFIG?.price) return window.GLOBAL_CONFIG.price;
-            } catch(e) {} return null; }""",
-
-            # 搜索页内嵌数据
+                if(window.g_config?.price)return window.g_config.price;
+                if(window.__g?.price)return window.__g.price;
+            }catch(e){}return null}""",
             """() => { try {
-                const scripts = document.querySelectorAll('script[type="application/json"]');
-                for (const s of scripts) {
-                    const d = JSON.parse(s.textContent);
-                    const p = d?.price || d?.data?.price || d?.item?.price;
-                    if (p && parseFloat(p) > 10) return p;
+                const ss=document.querySelectorAll('script');
+                for(const s of ss){
+                    const m=s.textContent.match(/["'](?:price|currentPrice|defPrice|salePrice|reservePrice)["']\\s*[:=]\\s*["']?(\\d+\\.?\\d*)/);
+                    if(m){const v=parseFloat(m[1]);if(v>10&&v<9999)return v}
                 }
-            } catch(e) {} return null; }""",
-
-            # 从所有 script 中搜索价格
-            """() => { try {
-                const scripts = document.querySelectorAll('script');
-                for (const s of scripts) {
-                    const t = s.textContent || '';
-                    const m = t.match(/"(?:price|currentPrice|defPrice|salePrice)"\s*:\s*["']?(\d+\.?\d*)/);
-                    if (m) {
-                        const v = parseFloat(m[1]);
-                        if (v > 10 && v < 99999) return v;
-                    }
-                }
-            } catch(e) {} return null; }""",
+            }catch(e){}return null}""",
         ]
-
-        for i, js in enumerate(js_queries):
+        for js in js_queries:
             try:
                 result = await page.evaluate(js)
                 if result is not None:
-                    # 处理可能返回的字符串
-                    val = float(str(result).split("-")[0].split("~")[0])
-                    if 10 <= val <= 9999:
-                        print(f"  JS变量[{i}] → ¥{val}")
-                        return val
-            except Exception as e:
-                continue
-
-        return None
-
-    async def _extract_price_from_api(self, page) -> Optional[float]:
-        """拦截淘宝价格 API 响应"""
-        api_patterns = [
-            "**/mtop.taobao.detail.getdetail/**",
-            "**/h5/**",
-            "**/api/**item**",
-            "**/detail/**",
-        ]
-
-        for pattern in api_patterns:
-            try:
-                # 重新加载页面并等待 API
-                response = await page.wait_for_response(pattern, timeout=8000)
-                if response and response.ok:
-                    try:
-                        data = await response.json()
-                        # 递归搜索 price 字段
-                        val = self._find_price_in_json(data)
-                        if val:
-                            print(f"  API拦截 → ¥{val}")
-                            return val
-                    except Exception:
-                        pass
+                    v = float(str(result).split("-")[0].split("~")[0])
+                    if 10 <= v <= 9999:
+                        all_prices.append(("JS", "js_var", v))
+                        break
             except Exception:
                 continue
-        return None
 
-    @staticmethod
-    def _find_price_in_json(data, depth=0) -> Optional[float]:
-        """递归在 JSON 中寻找价格"""
-        if depth > 5:
-            return None
-        if isinstance(data, dict):
-            for key in ["price", "currentPrice", "defPrice", "salePrice", "reservePrice"]:
-                val = data.get(key)
-                if val:
-                    try:
-                        v = float(str(val).split("-")[0].split("~")[0])
-                        if 10 <= v <= 9999:
-                            return v
-                    except (ValueError, TypeError):
-                        pass
-            for v in data.values():
-                result = TaobaoFetcher._find_price_in_json(v, depth + 1)
-                if result:
-                    return result
-        elif isinstance(data, list):
-            for item in data[:5]:
-                result = TaobaoFetcher._find_price_in_json(item, depth + 1)
-                if result:
-                    return result
+        # 3) 全文正则
+        body = await page.inner_text("body")
+        for m in re.finditer(r'[¥￥](\d+\.?\d*)', body):
+            v = float(m.group(1))
+            if 10 <= v <= 9999:
+                all_prices.append(("TEXT", "regex_¥", v))
+
+        # 从候选价格中选最小那个（通常是真实售价）
+        if all_prices:
+            # 去重
+            seen = set()
+            unique = []
+            for src, sel, v in all_prices:
+                if v not in seen:
+                    seen.add(v)
+                    unique.append((src, sel, v))
+            # 选最小的（通常是最低售价）
+            best = min(unique, key=lambda x: x[2])
+            print(f"  {best[0]}[{best[1]}] → ¥{best[2]} (共{len(unique)}个候选)")
+            return best[2]
+
         return None
 
     @staticmethod
