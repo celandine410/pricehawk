@@ -4,5 +4,11 @@
     "platform": "manual",
     "sku_id": "xiaomi-powerbank-1",
     "last_updated": "https://item.taobao.com/item.htm?id=895572373635"
+  },
+  "taobao:895572373635": {
+    "name": "淘宝",
+    "platform": "taobao",
+    "sku_id": "895572373635",
+    "last_updated": "https://item.taobao.com/item.htm?id=895572373635"
   }
 }
