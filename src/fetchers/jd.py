@@ -1,6 +1,7 @@
-"""京东价格抓取器 — Playwright 浏览器渲染版"""
+"""京东价格抓取器 — Playwright API 拦截版"""
 from __future__ import annotations
 
+import json
 import re
 from typing import Optional
 
@@ -14,16 +15,7 @@ class JDFetcher(BaseFetcher):
 
     PLATFORM = "jd"
 
-    PRICE_SELECTORS = [
-        ".p-price",
-        "#jd-price",
-        ".summary-price",
-        ".sale-price",
-        ".p-price span.price",
-    ]
-
     async def fetch(self, url: str) -> Optional[ProductInfo]:
-        """用 Playwright 渲染京东桌面页面并提取价格"""
         sku_id = self._extract_sku(url)
         if not sku_id:
             print(f"[京东] 无法提取 SKU: {url[:50]}")
@@ -38,31 +30,32 @@ class JDFetcher(BaseFetcher):
                     args=["--no-sandbox", "--disable-setuid-sandbox"]
                 )
                 context = await browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
                     viewport={"width": 1440, "height": 900},
                     locale="zh-CN",
                 )
                 page = await context.new_page()
 
                 print(f"  加载页面...")
-                # 桌面版页面，用 load 不会被 XHR 拖死
                 await page.goto(url, wait_until="load", timeout=30000)
 
-                print(f"  等待价格渲染...")
-                await page.wait_for_timeout(5000)
+                # 从页面 JS 变量中提取价格
+                price = await self._extract_price_from_js(page)
 
-                price = await self._extract_price(page)
+                # 如果 JS 取不到，等网络响应
+                if price is None:
+                    price = await self._wait_for_price_api(page, sku_id)
+
+                # 如果还是没有，再等一会重试 JS
+                if price is None:
+                    await page.wait_for_timeout(5000)
+                    price = await self._extract_price_from_js(page)
 
                 title = await page.title()
-
                 await browser.close()
 
                 if price is None:
-                    print(f"[京东] 页面加载完成但未找到价格")
+                    print(f"[京东] 所有方式都无法获取价格")
                     return None
 
                 if title:
@@ -71,6 +64,7 @@ class JDFetcher(BaseFetcher):
                             title = title.split(s)[0].strip()
                     title = title[:80]
 
+                print(f"  → ¥{price}")
                 return ProductInfo(
                     platform=self.PLATFORM,
                     url=url,
@@ -84,78 +78,96 @@ class JDFetcher(BaseFetcher):
             print(f"[京东] Playwright 异常: {type(e).__name__}: {str(e)[:100]}")
             return None
 
-    async def _extract_price(self, page) -> Optional[float]:
-        """多层价格提取策略"""
+    async def _extract_price_from_js(self, page) -> Optional[float]:
+        """从页面 JS 变量中提取价格"""
+        js_queries = [
+            # pageConfig
+            """() => { try {
+                if (window.pageConfig?.price) return window.pageConfig.price;
+            } catch(e) {} return null; }""",
 
-        # 1) CSS 选择器
-        for selector in self.PRICE_SELECTORS:
+            # 从 JSON script 中搜索
+            """() => { try {
+                const scripts = document.querySelectorAll('script');
+                for (const s of scripts) {
+                    const t = s.textContent || '';
+                    const ms = t.match(/(?:jdPrice|price|salePrice)\s*[:=]\s*["']?(\d+\.?\d*)/gi);
+                    if (ms) {
+                        for (const m of ms) {
+                            const n = m.match(/(\d+\.?\d*)/);
+                            if (n) {
+                                const v = parseFloat(n[1]);
+                                if (v > 10 && v < 9999) return v;
+                            }
+                        }
+                    }
+                }
+            } catch(e) {} return null; }""",
+
+            # 搜索 HTML 内容中 ¥ 符号附近的价格
+            """() => { try {
+                const body = document.body.innerText;
+                const ms = body.match(/[¥￥]\s*(\d+\.?\d*)/g);
+                if (ms) {
+                    for (const m of ms) {
+                        const n = m.match(/(\d+\.?\d*)/);
+                        if (n) {
+                            const v = parseFloat(n[1]);
+                            if (v > 10 && v < 9999) return v;
+                        }
+                    }
+                }
+            } catch(e) {} return null; }""",
+        ]
+
+        for i, js in enumerate(js_queries):
             try:
-                elements = await page.query_selector_all(selector)
-                for el in elements:
-                    text = await el.inner_text()
-                    text = text.strip()
-                    if not text:
+                result = await page.evaluate(js)
+                if result is not None:
+                    val = float(result)
+                    if 10 <= val <= 9999:
+                        print(f"  JS变量[{i}] → ¥{val}")
+                        return val
+            except Exception:
+                continue
+        return None
+
+    async def _wait_for_price_api(self, page, sku_id: str) -> Optional[float]:
+        """等待并拦截京东价格 API 响应"""
+        # 京东的价格 API 模式
+        api_patterns = [
+            f"**/p.3.cn/prices/mgets**skuIds=J_{sku_id}**",
+            f"**/p.3.cn/prices/mgets**{sku_id}**",
+            "**/p.3.cn/prices/mgets**",
+            "**/price/**",
+            "**/getPrice**",
+        ]
+
+        for pattern in api_patterns:
+            try:
+                response = await page.wait_for_response(pattern, timeout=8000)
+                if response and response.ok:
+                    body = await response.text()
+                    try:
+                        data = json.loads(body)
+                    except json.JSONDecodeError:
                         continue
-                    nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
-                    for n in nums:
-                        val = float(n)
-                        if 10 <= val <= 9999:
-                            print(f"  选择器 '{selector}' → ¥{val}")
-                            return val
+                    # 解析 [{id: "J_xxx", p: "79.00"}, ...]
+                    if isinstance(data, list):
+                        for item in data:
+                            for key in ["p", "price", "jdPrice"]:
+                                val = item.get(key)
+                                if val:
+                                    v = float(val)
+                                    if 10 <= v <= 9999:
+                                        print(f"  API拦截 → ¥{v}")
+                                        return v
             except Exception:
                 continue
-
-        # 2) HTML 源码正则
-        html = await page.content()
-        html_patterns = [
-            r'"price"\s*[:=]\s*["\']?(\d+\.?\d*)',
-            r'"p"\s*[:=]\s*["\']?(\d+\.?\d*)',
-            r'"jdPrice"\s*[:=]\s*["\']?(\d+\.?\d*)',
-            r'pageConfig\.price\s*=\s*(\d+\.?\d*)',
-        ]
-        for pat in html_patterns:
-            m = re.search(pat, html)
-            if m:
-                val = float(m.group(1))
-                if 10 <= val <= 9999:
-                    print(f"  源码正则 → ¥{val}")
-                    return val
-
-        # 3) 页面正文正则
-        body_text = await page.inner_text("body")
-        body_patterns = [
-            r'¥\s*(\d+\.?\d*)',
-            r'￥\s*(\d+\.?\d*)',
-        ]
-        for pat in body_patterns:
-            for m in re.finditer(pat, body_text):
-                val = float(m.group(1))
-                if 10 <= val <= 9999:
-                    print(f"  正文正则 → ¥{val}")
-                    return val
-
-        # 4) 等2秒再试（延迟加载的价格）
-        print(f"  等待延迟加载...")
-        await page.wait_for_timeout(2000)
-        for selector in self.PRICE_SELECTORS:
-            try:
-                el = await page.query_selector(selector)
-                if el:
-                    text = await el.inner_text()
-                    nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
-                    for n in nums:
-                        val = float(n)
-                        if 10 <= val <= 9999:
-                            print(f"  延时重试 → ¥{val}")
-                            return val
-            except Exception:
-                continue
-
         return None
 
     @staticmethod
     def _extract_sku(url: str) -> Optional[str]:
-        """提取京东商品 SKU ID"""
         m = re.search(r'item\.jd\.com/(\d+)\.html', url)
         if m:
             return m.group(1)
