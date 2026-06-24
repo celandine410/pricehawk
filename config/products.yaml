@@ -10,3 +10,4 @@ products:
     target_price: 69         # 低于69元时通知你
     drop_threshold: 5.0      # 跌幅超5%通知
     arbitrage_threshold: 5.0 # 跨平台差价超5元通知
+    manual_price: 89         # 当前大概价格（API失败时兜底）

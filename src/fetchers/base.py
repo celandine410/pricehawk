@@ -37,6 +37,7 @@ class ProductConfig:
     target_price: Optional[float] = None    # 目标价：低于此价告警
     drop_threshold: float = 5.0             # 跌幅百分比阈值（默认5%）
     arbitrage_threshold: float = 10.0       # 跨平台价差阈值（默认10元）
+    manual_price: Optional[float] = None    # 手动填写价格（API失败时兜底）
 
 
 class BaseFetcher:

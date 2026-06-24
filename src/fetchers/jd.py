@@ -15,53 +15,36 @@ class JDFetcher(BaseFetcher):
     """京东价格抓取器"""
 
     PLATFORM = "jd"
-    PRICE_API = "https://p.3.cn/prices/mgets"
 
     async def fetch(self, url: str) -> Optional[ProductInfo]:
         """从京东商品页/API 抓取价格信息"""
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Referer": "https://www.jd.com/",
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
-                resp = await client.get(url, headers=headers)
-                resp.raise_for_status()
-        except Exception as e:
-            print(f"[京东] 请求失败: {url[:50]}... 错误: {e}")
+        sku_id = self._extract_sku(url)
+        if not sku_id:
+            print(f"[京东] 无法提取 SKU: {url[:50]}")
             return None
 
-        html = resp.text
-        soup = BeautifulSoup(html, "lxml")
+        print(f"  SKU: {sku_id}")
 
-        # --- 提取 SKU ---
-        sku_id = self._extract_sku(url, html)
-
-        # --- 标题 ---
-        title = self._extract_title(soup, html)
-
-        # --- 价格: 优先 API，其次页面解析 ---
+        title = None
         price = None
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            price = await self._fetch_price_from_api(client, sku_id)
+
+        # 策略1: 调用价格 API
+        price = await self._try_price_apis(sku_id)
+
+        # 策略2: 获取页面并解析
         if price is None:
-            price = self._extract_price_from_page(html)
+            page_data = await self._fetch_page(url)
+            if page_data:
+                html, soup = page_data
+                title = self._extract_title(soup, html)
+                price = self._extract_price_from_page(html)
+                if price is None:
+                    # 试试从页面标题提取商品名
+                    title = title or self._extract_title(soup, html)
+
         if price is None:
-            print(f"[京东] 无法解析价格: {url[:50]}...")
+            print(f"[京东] 所有方式都无法获取价格")
             return None
-
-        # --- 原价 ---
-        original_price = self._extract_original_price(soup, html)
-
-        # --- 促销 ---
-        discount = self._extract_discount(soup, html)
 
         return ProductInfo(
             platform=self.PLATFORM,
@@ -69,106 +52,103 @@ class JDFetcher(BaseFetcher):
             sku_id=sku_id,
             title=title or sku_id,
             current_price=price,
-            original_price=original_price,
-            discount=discount,
             in_stock=True,
         )
 
-    async def _fetch_price_from_api(self, client: httpx.AsyncClient, sku_id: str) -> Optional[float]:
-        """通过京东价格 API 获取价格"""
-        try:
-            api_url = f"{self.PRICE_API}?skuIds=J_{sku_id}&type=1"
-            api_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://item.jd.com/",
-            }
-            resp = await client.get(api_url, headers=api_headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
-                    price_str = data[0].get("p")
-                    if price_str:
-                        return float(price_str)
-        except Exception as e:
-            print(f"[京东] API 请求异常: {e}")
+    async def _try_price_apis(self, sku_id: str) -> Optional[float]:
+        """尝试多个价格 API 端点"""
+        api_urls = [
+            f"https://p.3.cn/prices/mgets?skuIds=J_{sku_id}&type=1",
+            f"https://p.3.cn/prices/mgets?skuIds=J_{sku_id}",
+            f"https://p.3.cn/prices/mgets?skuIds={sku_id}&type=1",
+            f"https://p.3.cn/prices/mgets?skuIds={sku_id}",
+            f"https://p.3.cn/prices/mgets?skuIds=J_{sku_id}&type=1&area=1_72_4137_0",
+        ]
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://item.jd.com/",
+            "Accept": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            for i, api_url in enumerate(api_urls):
+                try:
+                    resp = await client.get(api_url, headers=headers)
+                    if resp.status_code != 200:
+                        print(f"  API[{i}] HTTP {resp.status_code}")
+                        continue
+                    data = resp.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        # 尝试多个字段名
+                        for key in ["p", "price", "jdPrice"]:
+                            val = data[0].get(key)
+                            if val:
+                                price = float(val)
+                                if price > 0:
+                                    print(f"  API[{i}] 成功: ¥{price}")
+                                    return price
+                    print(f"  API[{i}] 返回空数据: {str(data)[:100]}")
+                except Exception as e:
+                    err_type = type(e).__name__
+                    print(f"  API[{i}] {err_type}: {str(e)[:80]}")
+                    continue
         return None
 
+    async def _fetch_page(self, url: str) -> Optional[tuple]:
+        """获取商品页面 HTML"""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Referer": "https://www.jd.com/",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                soup = BeautifulSoup(resp.text, "lxml")
+                return resp.text, soup
+        except Exception as e:
+            print(f"  [京东] 页面请求失败: {e}")
+            return None
+
     @staticmethod
-    def _extract_sku(url: str, html: str) -> str:
+    def _extract_sku(url: str) -> Optional[str]:
         """提取京东商品 SKU ID"""
-        # URL 中提取: https://item.jd.com/123456.html
         m = re.search(r'item\.jd\.com/(\d+)\.html', url)
         if m:
             return m.group(1)
-        # 短链接: https://3.cn/xxxx
-        # 页面中 JS 变量
-        m = re.search(r'"skuId"\s*:\s*"(\d+)"', html)
+        m = re.search(r'/(\d+)\.html', url)
         if m:
             return m.group(1)
-        m = re.search(r'sku:(\d+)', html)
-        if m:
-            return m.group(1)
-        return url.rsplit("/", 1)[-1].replace(".html", "")
+        return None
 
     @staticmethod
     def _extract_title(soup: BeautifulSoup, html: str) -> Optional[str]:
         """提取商品标题"""
-        # <title>
         title_tag = soup.find("title")
         if title_tag and title_tag.text.strip():
             t = title_tag.text.strip()
-            # 去掉 "【什么值得买】" 之类的后缀
             for suffix in ["【", " [", " - 京东"]:
                 if suffix in t:
                     t = t.split(suffix)[0].strip()
-            return t if t else None
+            if t and len(t) > 3:
+                return t[:80]
         return None
 
     @staticmethod
     def _extract_price_from_page(html: str) -> Optional[float]:
-        """从页面 HTML 正则提取价格（备用方案）"""
+        """从页面正则提取价格"""
         patterns = [
             r'"price"\s*:\s*["\']?(\d+\.?\d*)',
             r'"p"\s*:\s*["\']?(\d+\.?\d*)',
+            r'"jdPrice"\s*:\s*["\']?(\d+\.?\d*)',
             r'pageConfig\.price\s*=\s*(\d+\.?\d*)',
         ]
         for pattern in patterns:
             m = re.search(pattern, html)
             if m:
-                return float(m.group(1))
-        return None
-
-    @staticmethod
-    def _extract_original_price(soup: BeautifulSoup, html: str) -> Optional[float]:
-        """提取京东原价"""
-        patterns = [
-            r'"originalPrice"\s*:\s*["\']?(\d+\.?\d*)',
-            r'"marketPrice"\s*:\s*["\']?(\d+\.?\d*)',
-        ]
-        for pattern in patterns:
-            m = re.search(pattern, html)
-            if m:
-                return float(m.group(1))
-
-        selectors = [".p-price .market-price", ".market-price"]
-        for sel in selectors:
-            el = soup.select_one(sel)
-            if el and el.text.strip():
-                price_text = re.sub(r'[^\d.]', '', el.text.strip())
-                if price_text:
-                    return float(price_text)
-        return None
-
-    @staticmethod
-    def _extract_discount(soup: BeautifulSoup, html: str) -> Optional[str]:
-        """提取促销标签"""
-        selectors = [".promo-word", ".promo-tag", ".goods-promo"]
-        for sel in selectors:
-            el = soup.select_one(sel)
-            if el and el.text.strip():
-                return el.text.strip()
-        # 正则匹配促销文案
-        m = re.search(r'"promoDesc"\s*:\s*"([^"]+)"', html)
-        if m:
-            return m.group(1)
+                val = float(m.group(1))
+                if val > 1:
+                    return val
         return None

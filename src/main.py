@@ -64,9 +64,20 @@ async def main():
             else:
                 print("失败")
 
-        # 没有成功抓取到任何数据
+        # 如果所有平台都失败了，但配置了 manual_price，用兜底价格
         if not results:
-            print("  所有平台都失败了，跳过")
+            if product.manual_price is not None:
+                print(f"  使用手动兜底价格: ¥{product.manual_price}")
+                fallback = ProductInfo(
+                    platform="manual",
+                    url=product.taobao_url or product.jd_url or "",
+                    sku_id=product.id,
+                    title=product.name,
+                    current_price=product.manual_price,
+                )
+                await drop_analyzer.check(product, fallback)
+            else:
+                print("  所有平台都失败了，跳过")
             continue
 
         # 5. 降价检测（对每个成功抓取的平台）
