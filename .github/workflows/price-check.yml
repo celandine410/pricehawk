@@ -10,6 +10,9 @@ on:
 jobs:
   price-check:
     runs-on: ubuntu-latest
+    # 赋予写入仓库的权限
+    permissions:
+      contents: write
     # 使用中国镜像加速（可选）
     # runs-on: ubuntu-22.04
 
