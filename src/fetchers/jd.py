@@ -14,17 +14,23 @@ class JDFetcher(BaseFetcher):
 
     PLATFORM = "jd"
 
+    PRICE_SELECTORS = [
+        ".p-price",
+        "#jd-price",
+        ".price",
+        ".summary-price",
+        ".sale-price",
+        "[class*='price']",
+    ]
+
     async def fetch(self, url: str) -> Optional[ProductInfo]:
-        """用 Playwright 渲染京东页面并提取价格"""
+        """用 Playwright 渲染京东桌面页面并提取价格"""
         sku_id = self._extract_sku(url)
         if not sku_id:
             print(f"[京东] 无法提取 SKU: {url[:50]}")
             return None
 
         print(f"  SKU: {sku_id}")
-
-        # 优先使用移动版页面（加载更快、结构更简单）
-        page_url = f"https://item.m.jd.com/product/{sku_id}.html"
 
         try:
             async with async_playwright() as pw:
@@ -34,27 +40,25 @@ class JDFetcher(BaseFetcher):
                 )
                 context = await browser.new_context(
                     user_agent=(
-                        "Mozilla/5.0 (Linux; Android 13) "
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Mobile Safari/537.36"
+                        "Chrome/120.0.0.0 Safari/537.36"
                     ),
-                    viewport={"width": 375, "height": 812},
+                    viewport={"width": 1440, "height": 900},
                     locale="zh-CN",
                 )
                 page = await context.new_page()
 
-                # 导航到商品页
                 print(f"  加载页面...")
-                await page.goto(page_url, wait_until="networkidle", timeout=30000)
+                # 桌面版页面，用 load 不会被 XHR 拖死
+                await page.goto(url, wait_until="load", timeout=30000)
 
-                # 额外等待内容渲染
-                await page.wait_for_timeout(3000)
+                print(f"  等待价格渲染...")
+                await page.wait_for_timeout(5000)
 
-                # 提取标题
-                title = await page.title()
-
-                # 提取价格 — 尝试多个选择器
                 price = await self._extract_price(page)
+
+                title = await page.title()
 
                 await browser.close()
 
@@ -62,7 +66,6 @@ class JDFetcher(BaseFetcher):
                     print(f"[京东] 页面加载完成但未找到价格")
                     return None
 
-                # 标题清理
                 if title:
                     for s in ["【", " [", " - 京东"]:
                         if s in title:
@@ -82,29 +85,18 @@ class JDFetcher(BaseFetcher):
             print(f"[京东] Playwright 异常: {type(e).__name__}: {str(e)[:100]}")
             return None
 
-    @staticmethod
-    async def _extract_price(page) -> Optional[float]:
-        """从渲染后的页面提取价格"""
-        selectors = [
-            # 京东移动版常用价格元素
-            ".price",
-            ".p-price",
-            "#jd-price",
-            ".sale-price",
-            ".J-p-10132678976953",
-            "[class*='price']",
-            # 桌面版选择器（备选）
-            ".summary-price",
-            ".tb-rmb-num",
-        ]
+    async def _extract_price(self, page) -> Optional[float]:
+        """多层价格提取策略"""
 
-        for selector in selectors:
+        # 1) CSS 选择器
+        for selector in self.PRICE_SELECTORS:
             try:
-                el = await page.query_selector(selector)
-                if el:
+                elements = await page.query_selector_all(selector)
+                for el in elements:
                     text = await el.inner_text()
                     text = text.strip()
-                    # 提取数字
+                    if not text:
+                        continue
                     nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
                     for n in nums:
                         val = float(n)
@@ -114,21 +106,51 @@ class JDFetcher(BaseFetcher):
             except Exception:
                 continue
 
-        # 备用：从整个页面文本中提取价格模式
-        body_text = await page.inner_text("body")
-        patterns = [
-            r'京东价[：:]\s*[¥￥]?\s*(\d+\.?\d*)',
-            r'¥\s*(\d+\.?\d*)',
-            r'￥\s*(\d+\.?\d*)',
-            r'price["\']?\s*[:=]\s*["\']?(\d+\.?\d*)',
+        # 2) HTML 源码正则
+        html = await page.content()
+        html_patterns = [
+            r'"price"\s*[:=]\s*["\']?(\d+\.?\d*)',
+            r'"p"\s*[:=]\s*["\']?(\d+\.?\d*)',
+            r'"jdPrice"\s*[:=]\s*["\']?(\d+\.?\d*)',
+            r'pageConfig\.price\s*=\s*(\d+\.?\d*)',
         ]
-        for pat in patterns:
-            m = re.search(pat, body_text)
+        for pat in html_patterns:
+            m = re.search(pat, html)
             if m:
                 val = float(m.group(1))
                 if 1 < val < 99999:
-                    print(f"  正则 '{pat}' → ¥{val}")
+                    print(f"  源码正则 → ¥{val}")
                     return val
+
+        # 3) 页面正文正则
+        body_text = await page.inner_text("body")
+        body_patterns = [
+            r'¥\s*(\d+\.?\d*)',
+            r'￥\s*(\d+\.?\d*)',
+        ]
+        for pat in body_patterns:
+            for m in re.finditer(pat, body_text):
+                val = float(m.group(1))
+                if 1 < val < 99999:
+                    print(f"  正文正则 → ¥{val}")
+                    return val
+
+        # 4) 等2秒再试（延迟加载的价格）
+        print(f"  等待延迟加载...")
+        await page.wait_for_timeout(2000)
+        for selector in self.PRICE_SELECTORS:
+            try:
+                el = await page.query_selector(selector)
+                if el:
+                    text = await el.inner_text()
+                    nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
+                    for n in nums:
+                        val = float(n)
+                        if 1 < val < 99999:
+                            print(f"  延时重试 → ¥{val}")
+                            return val
+            except Exception:
+                continue
 
         return None
 
