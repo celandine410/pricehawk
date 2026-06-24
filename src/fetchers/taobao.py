@@ -84,46 +84,50 @@ class TaobaoFetcher(BaseFetcher):
 
     @staticmethod
     async def _extract_price(page) -> Optional[float]:
-        """从渲染后的页面提取价格"""
+        """从渲染后的页面提取价格（严格验证）"""
+        # 只使用淘宝/天猫的特定价格选择器，避免误匹配
         selectors = [
-            # 淘宝/天猫移动版价格元素
-            ".tm-price",
-            ".price",
-            ".tb-rmb-num",
-            "[class*='price']",
-            "[class*='Price']",
-            ".J_originalPrice",
+            ".tm-price",           # 天猫价
+            ".tb-rmb-num",         # 淘宝价
+            ".J_StrPr498",         # 淘宝JS价格
+            ".tm-promo-price .tm-price",  # 天猫促销价
+            ".price-current",      # 当前价格
         ]
+
+        found_prices = []
 
         for selector in selectors:
             try:
-                el = await page.query_selector(selector)
-                if el:
+                elements = await page.query_selector_all(selector)
+                for el in elements:
                     text = await el.inner_text()
                     text = text.strip()
                     nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
                     for n in nums:
                         val = float(n)
-                        if 1 < val < 99999:
-                            print(f"  选择器 '{selector}' → ¥{val}")
-                            return val
+                        # 价格合理性：¥10 ~ ¥9999
+                        if 10 <= val <= 9999:
+                            found_prices.append((selector, val))
             except Exception:
                 continue
 
-        # 备用：全文正则
+        if found_prices:
+            # 如果有多个价格，取最小的那个（通常是实际售价）
+            best = min(found_prices, key=lambda x: x[1])
+            print(f"  选择器 '{best[0]}' → ¥{best[1]} (共{len(found_prices)}个候选)")
+            return best[1]
+
+        # 备用：全文正则（也做严格验证）
         body_text = await page.inner_text("body")
         patterns = [
             r'¥\s*(\d+\.?\d*)',
             r'￥\s*(\d+\.?\d*)',
-            r'"price"\s*[:=]\s*["\']?(\d+\.?\d*)',
-            r'"currentPrice"\s*[:=]\s*["\']?(\d+\.?\d*)',
         ]
         for pat in patterns:
-            m = re.search(pat, body_text)
-            if m:
+            for m in re.finditer(pat, body_text):
                 val = float(m.group(1))
-                if 1 < val < 99999:
-                    print(f"  正则 '{pat}' → ¥{val}")
+                if 10 <= val <= 9999:
+                    print(f"  正则 → ¥{val}")
                     return val
 
         return None

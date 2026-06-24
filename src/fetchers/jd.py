@@ -17,10 +17,9 @@ class JDFetcher(BaseFetcher):
     PRICE_SELECTORS = [
         ".p-price",
         "#jd-price",
-        ".price",
         ".summary-price",
         ".sale-price",
-        "[class*='price']",
+        ".p-price span.price",
     ]
 
     async def fetch(self, url: str) -> Optional[ProductInfo]:
@@ -100,7 +99,7 @@ class JDFetcher(BaseFetcher):
                     nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
                     for n in nums:
                         val = float(n)
-                        if 1 < val < 99999:
+                        if 10 <= val <= 9999:
                             print(f"  选择器 '{selector}' → ¥{val}")
                             return val
             except Exception:
@@ -118,7 +117,7 @@ class JDFetcher(BaseFetcher):
             m = re.search(pat, html)
             if m:
                 val = float(m.group(1))
-                if 1 < val < 99999:
+                if 10 <= val <= 9999:
                     print(f"  源码正则 → ¥{val}")
                     return val
 
@@ -131,7 +130,7 @@ class JDFetcher(BaseFetcher):
         for pat in body_patterns:
             for m in re.finditer(pat, body_text):
                 val = float(m.group(1))
-                if 1 < val < 99999:
+                if 10 <= val <= 9999:
                     print(f"  正文正则 → ¥{val}")
                     return val
 
@@ -146,7 +145,7 @@ class JDFetcher(BaseFetcher):
                     nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
                     for n in nums:
                         val = float(n)
-                        if 1 < val < 99999:
+                        if 10 <= val <= 9999:
                             print(f"  延时重试 → ¥{val}")
                             return val
             except Exception:
