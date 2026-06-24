@@ -1,0 +1,37 @@
+name: WatchDog - 定时检查
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install httpx pyyaml pydantic
+
+      - name: 运行监控
+        env:
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+        run: python -m src.main
+
+      - name: 提交历史数据
+        run: |
+          git config --local user.email "watchdog@bot.com"
+          git config --local user.name "WatchDog Bot"
+          git add data/
+          git diff --quiet && git diff --staged --quiet || git commit -m "📊 更新历史数据 $(date +'%Y-%m-%d')"
+          git push --force

@@ -1,21 +1,20 @@
-"""产品配置加载器"""
+"""配置加载器"""
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import yaml
 
-from src.fetchers.base import ProductConfig
+from src.fetchers.base import MonitorConfig
 
 
-def load_products(path: Optional[str] = None) -> List[ProductConfig]:
-    """从 YAML 文件加载商品配置"""
+def load_config(path: Optional[str] = None) -> List[MonitorConfig]:
+    """加载监控配置"""
     if path is None:
-        # 默认路径：项目根目录下的 config/
         base = Path(__file__).resolve().parent.parent
-        path = str(base / "config" / "products.yaml")
+        path = str(base / "config" / "items.yaml")
 
     if not os.path.exists(path):
         print(f"[配置] 文件不存在: {path}")
@@ -24,16 +23,16 @@ def load_products(path: Optional[str] = None) -> List[ProductConfig]:
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
-    if not raw or "products" not in raw:
-        print("[配置] 未找到商品列表")
+    if not raw or "items" not in raw:
+        print("[配置] 未找到监控列表")
         return []
 
-    products = []
-    for item in raw["products"]:
+    items = []
+    for item in raw["items"]:
         try:
-            products.append(ProductConfig(**item))
+            items.append(MonitorConfig(**item))
         except Exception as e:
             print(f"[配置] 跳过无效项: {item.get('name', 'unknown')} — {e}")
 
-    print(f"[配置] 加载 {len(products)} 个商品")
-    return products
+    print(f"[配置] 加载 {len(items)} 个监控项")
+    return items

@@ -1,116 +1,108 @@
-# 🦅 比价鹰 PriceHawk
+# 🐶 WatchDog 万能自动化监控模板
 
-> **零成本 · 全自动 · 电商比价监控**  
-> 学生友好版 — 不花一分钱，7×24小时自动盯价，降价/套利微信通知
-
----
-
-## ✨ 它能做什么
-
-| 功能 | 说明 |
-|---|---|
-| 📉 **降价提醒** | 你关注的商品降价了 → 微信通知 |
-| 💰 **套利发现** | 同一商品淘宝比京东便宜 → 微信通知 |
-| 📊 **价格追踪** | 每次价格变化自动记录，历史可查 |
-| 🤖 **全自动运行** | GitHub Actions 定时触发，无需你的设备 |
+> **监控任何数字变化 · 微信自动通知 · 全云端运行 · ¥0 成本**
 
 ---
 
-## 🚀 30 秒上手
+## 它能做什么？
 
-### 1. Fork 这个仓库
+这是一个**通用的数值监控框架**，你只需要告诉它要监控什么数字，它就会：
 
-点击右上角 **Fork** 按钮，把仓库复制到你的 GitHub 账号下。
+- ✅ **定时检查** — 每隔 6 小时自动运行一次
+- ✅ **记录历史** — 所有变化自动保存
+- ✅ **微信通知** — 数字变化时推送到你的微信
+- ✅ **零成本** — 全部跑在 GitHub 免费服务器上
 
-### 2. 配置商品
+### 使用场景举例
 
-编辑 [`config/products.yaml`](config/products.yaml)，填入你想监控的商品链接：
+| 场景 | 怎么用 |
+|------|--------|
+| 📉 **价格监控** | 每周手动更新一次商品价格，监控降价趋势 |
+| 📊 **数据追踪** | 追踪你的网站流量、粉丝数、收益等指标 |
+| 🔔 **阈值告警** | 设定目标值，一旦达标立刻通知你 |
+| 📝 **定期记录** | 任何你想定期记录的数字（体重、学习时长等） |
+
+---
+
+## 🚀 3 分钟部署
+
+### 第 1 步：Fork 这个仓库
+
+点击右上角 **Fork**，把仓库复制到你的 GitHub 账号下。
+
+### 第 2 步：配置你想要监控的内容
+
+编辑 [`config/items.yaml`](config/items.yaml)：
 
 ```yaml
-products:
-  - id: "my-item-1"
-    name: "索尼 WH-1000XM5 耳机"
-    taobao_url: "https://item.taobao.com/item.htm?id=xxxx"
-    jd_url: "https://item.jd.com/xxxx.html"
-    target_price: 1800          # 低于1800元时通知
-    drop_threshold: 5.0         # 降价超5%时通知
-    arbitrage_threshold: 20.0   # 跨平台差价超20元时通知
+items:
+  - id: "price-phone"
+    name: "iPhone 15"
+    manual_value: 5999       # 当前价格
+    target_value: 4999       # 低于此价通知你
+    drop_threshold: 10.0     # 降价超10%通知
+    url: "https://example.com/product"  # 可选
 ```
 
-### 3. 配置微信通知
+### 第 3 步：配置微信通知
 
-1. 打开 [Server酱](https://sct.ftqq.com) → 用微信扫码登录
+1. 打开 [Server酱](https://sct.ftqq.com) → 微信扫码登录
 2. 复制你的 **SendKey**
-3. 回到你的 GitHub 仓库 → **Settings → Secrets and variables → Actions**
-4. 点 **New repository secret** → 名称填 `SERVERCHAN_KEY` → 值填你的 SendKey
+3. 去你的 GitHub 仓库 → **Settings → Secrets and variables → Actions**
+4. 点 **New repository secret**
+   - Name: `SERVERCHAN_KEY`
+   - Value: 粘贴你的 SendKey
 
-### 4. 启动监控
+### 第 4 步：启动
 
-- 进入仓库 **Actions** 标签页
-- 启用 GitHub Actions（第一次需要手动点 "I understand my workflows"）
-- 点击 **比价鹰** → **Run workflow** → 绿色按钮手动跑一次测试
+1. 进入仓库 **Actions** 标签页
+2. 启用 GitHub Actions（点绿色按钮）
+3. 左侧点 **WatchDog** → **Run workflow**
 
-之后每 4 小时自动运行一次，价格变动会自动推送到你的微信。
+之后每 6 小时自动运行一次，微信会收到通知。
 
 ---
 
 ## 📝 配置说明
 
-| 配置项 | 说明 | 是否必填 |
-|---|---|---|
-| `id` | 商品唯一标识（英文/数字） | ✅ |
-| `name` | 商品显示名称（微信通知里会看到） | ✅ |
-| `taobao_url` | 淘宝商品链接 | 可选 |
-| `jd_url` | 京东商品链接 | 可选 |
-| `target_price` | 目标价：低于此价立刻通知 | 可选 |
-| `drop_threshold` | 跌幅百分比阈值（默认5%） | 可选 |
-| `arbitrage_threshold` | 跨平台价差阈值（元） | 可选 |
-
-> 至少填一个平台的 URL，填两个平台会自动开启跨平台套利检测。
+```yaml
+items:
+  - id: "唯一标识"           # 英文数字，不重复
+    name: "显示名称"          # 微信通知里看到的
+    manual_value: 100        # 当前值（改这个数字就更新了）
+    target_value: 80         # 低于此值通知（可选）
+    drop_threshold: 5.0      # 下降超此百分比通知
+    url: "https://..."       # 相关链接（可选）
+```
 
 ---
 
 ## 💸 成本
 
 | 项目 | 费用 |
-|---|---|
-| GitHub Actions 免费额度 | ¥0/月（2000分钟，够用） |
-| GitHub 仓库存储 | ¥0/月（1GB免费） |
-| Server酱 基础版 | ¥0/月（每天5条，前期够用） |
+|------|------|
+| GitHub Actions | ¥0/月（免费额度够用） |
+| Server酱 基础版 | ¥0/月（每天5条推送） |
 | **总计** | **¥0/月** |
 
 ---
 
-## 🧪 本地测试（可选）
+## 🔧 常见问题
 
-```bash
-pip install httpx beautifulsoup4 lxml pyyaml pydantic
-python src/main.py
-```
-
-需要设置环境变量：`SERVERCHAN_KEY=你的Key`
-
----
-
-## 🔧 故障排查
+**怎么更新数值？**
+编辑 `config/items.yaml` 里的 `manual_value`，提交到 GitHub 即可。
 
 **收不到微信通知？**
-- 检查 `SERVERCHAN_KEY` 是否在 GitHub Secrets 中配置正确
-- 去 Actions 页面查看运行日志，是否有报错
-- Server酱免费版每天5条，是否超限
+- 检查 `SERVERCHAN_KEY` 是否配置正确
+- 去 Actions 页面看运行日志
 
-**抓取不到价格？**
-- 检查商品链接是否有效（手动打开试试）
-- 某些商品页反爬较严，会偶发失败，下次自动重试
+**想监控多个东西？**
+在 `items.yaml` 里加多个条目就行。
 
 ---
 
-## 📋 路线图
+## 🛠 技术栈
 
-- [x] 淘宝/京东价格抓取
-- [x] 降价检测 + 微信通知
-- [x] 跨平台套利检测
-- [x] GitHub Actions 定时调度
-- [ ] Amazon 支持
-- [ ] 价格走势图（GitHub Pages）
-- [ ] 拼多多支持
+Python 3.11 · GitHub Actions · Server酱 · GitHub
+
+> 由 celandine410 构建 · 学生友好版

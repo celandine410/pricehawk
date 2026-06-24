@@ -1,94 +1,101 @@
-"""比价鹰主入口 — GitHub Actions 调度入口"""
+"""万能自动化监控模板 - 主入口"""
 from __future__ import annotations
 
 import asyncio
-import sys
-from typing import Dict, Optional
+from datetime import datetime
+from typing import Optional
 
-from src.config import load_products
-from src.fetchers import TaobaoFetcher, JDFetcher, BaseFetcher
-from src.fetchers.base import ProductConfig, ProductInfo
-from src.storage.history import PriceHistory
+from src.config import load_config
+from src.fetchers.base import ItemInfo, MonitorConfig
+from src.storage.history import ValueHistory
 from src.notifiers.serverchan import ServerChanNotifier
-from src.analyzers import PriceDropAnalyzer, ArbitrageAnalyzer
 
 
 async def main():
-    """主流程：加载配置 → 抓取所有商品 → 价格对比 → 推送通知"""
     print("=" * 40)
-    print("  比价鹰 PriceHawk v0.1")
+    print("  WatchDog 万能监控 v1.0")
+    print("  监控时间:", datetime.now().strftime("%Y-%m-%d %H:%M"))
     print("=" * 40)
 
-    # 1. 加载配置
-    products = load_products()
-    if not products:
-        print("[主] 没有配置任何商品，退出")
+    # 加载配置
+    items = load_config()
+    if not items:
+        print("[主] 没有配置任何监控项，退出")
         return
 
-    # 2. 初始化组件
+    # 初始化组件
     notifier = ServerChanNotifier()
-    history = PriceHistory()
-    drop_analyzer = PriceDropAnalyzer(history, notifier)
-    arbitrage_analyzer = ArbitrageAnalyzer(notifier)
+    history = ValueHistory()
 
-    # 3. 初始化抓取器
-    fetchers: Dict[str, BaseFetcher] = {
-        "taobao": TaobaoFetcher(),
-        "jd": JDFetcher(),
-    }
+    # 逐个处理监控项
+    for item in items:
+        print(f"\n--- 检查: {item.name} ---")
 
-    # 4. 逐个商品处理
-    for product in products:
-        print(f"\n--- 检查: {product.name} ---")
-        results: Dict[str, Optional[ProductInfo]] = {}
+        current_value = None
 
-        # 获取该商品各平台的 URL 映射
-        platform_urls = {
-            "taobao": product.taobao_url,
-            "jd": product.jd_url,
-        }
+        # 1) 尝试手动值
+        if item.manual_value is not None:
+            current_value = item.manual_value
+            print(f"  手动值: {current_value}")
 
-        # 逐个平台抓取
-        for platform, url in platform_urls.items():
-            if not url:
-                continue
-            fetcher = fetchers.get(platform)
-            if not fetcher:
+        # 2) 如果没有手动值，从历史取上次值（仅跟踪不变化）
+        if current_value is None:
+            last = history.get_latest(item.id)
+            if last is not None:
+                current_value = last
+                print(f"  使用上次值: {current_value}")
+            else:
+                print(f"  无数据，跳过")
                 continue
 
-            print(f"  抓取 [{platform}] ... ", end="")
-            info = await fetcher.fetch(url)
-            if info:
-                print(f"¥{info.current_price}")
-                results[platform] = info
-            else:
-                print("失败")
+        # 创建信息对象
+        info = ItemInfo(
+            id=item.id,
+            name=item.name,
+            current_value=current_value,
+        )
 
-        # 如果所有平台都失败了，但配置了 manual_price，用兜底价格
-        if not results:
-            if product.manual_price is not None:
-                print(f"  使用手动兜底价格: ¥{product.manual_price}")
-                fallback = ProductInfo(
-                    platform="manual",
-                    url=product.taobao_url or product.jd_url or "",
-                    sku_id=product.id,
-                    title=product.name,
-                    current_price=product.manual_price,
-                )
-                await drop_analyzer.check(product, fallback)
-            else:
-                print("  所有平台都失败了，跳过")
+        # 检查是否有历史记录
+        if history.is_first(item.id):
+            history.save(item.id, current_value)
+            print(f"  首次记录: {current_value}")
             continue
 
-        # 5. 降价检测（对每个成功抓取的平台）
-        for platform, info in results.items():
-            if info:
-                await drop_analyzer.check(product, info)
+        # 获取上次值
+        last_value = history.get_latest(item.id)
+        if last_value is None:
+            history.save(item.id, current_value)
+            continue
 
-        # 6. 跨平台套利检测
-        await arbitrage_analyzer.check(product, results)
+        # 保存本次值
+        history.save(item.id, current_value)
 
-    print("\n✅ 本轮检查完成")
+        # 检测变化
+        if last_value == current_value:
+            print(f"  未变化: {current_value}")
+            continue
+
+        # 下降了
+        if current_value < last_value:
+            drop_pct = (last_value - current_value) / last_value * 100
+            meets_target = (item.target_value is not None and current_value <= item.target_value)
+            meets_drop = drop_pct >= item.drop_threshold
+
+            if meets_target or meets_drop:
+                print(f"  ↓ 下降 {drop_pct:.1f}% ({last_value}→{current_value})")
+                await notifier.send_alert(
+                    name=item.name,
+                    old_value=last_value,
+                    new_value=current_value,
+                    unit="",
+                    url=item.url or "",
+                )
+            else:
+                print(f"  轻微下降: {drop_pct:.1f}%")
+        else:
+            print(f"  ↑ 上升: {last_value}→{current_value}")
+
+    print(f"\n✅ 本轮检查完成 ({datetime.now().strftime('%H:%M')})")
 
 
 if __name__ == "__main__":

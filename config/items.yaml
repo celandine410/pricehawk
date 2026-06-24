@@ -1,0 +1,18 @@
+# WatchDog 万能监控 — 配置你的监控项
+# Server酱 Key 通过 GitHub Secrets 传入 (SERVERCHAN_KEY)
+
+items:
+  - id: "example-1"
+    name: "示例监控项"
+    manual_value: 100       # 当前值，改成你实际的值
+    target_value: 80        # 低于此值通知
+    drop_threshold: 5.0     # 下降超5%通知
+    url: ""                 # 可选：相关链接
+
+  # 添加更多监控项：
+  # - id: "price-phone"
+  #   name: "iPhone 15"
+  #   manual_value: 5999
+  #   target_value: 4999
+  #   drop_threshold: 10.0
+  #   url: "https://example.com/product/123"
