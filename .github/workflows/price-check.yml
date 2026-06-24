@@ -33,7 +33,7 @@ jobs:
       - name: 运行比价引擎
         env:
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
-        run: python src/main.py
+        run: python -m src.main
 
       - name: 提交价格历史数据
         run: |
